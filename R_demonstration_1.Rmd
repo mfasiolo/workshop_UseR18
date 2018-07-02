@@ -1,0 +1,314 @@
+---
+title: "GAM modelling with mgcv and mgcViz"
+date: '`r format(Sys.Date(), "%B %d %Y")`'
+author: "Matteo Fasiolo"
+vignette: >
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteIndexEntry{quantile_mgcViz}
+    %\VignetteEncoding{UTF-8}
+---
+  
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(out.extra='style="display:block; margin: auto"', fig.align="center", tidy=FALSE)
+```
+
+```{r setup1, include=FALSE}
+library(RhpcBLASctl); blas_set_num_threads(1)
+```
+
+The `mgcv` R package offers methods for fitting GAM, using the methods described in [Wood, 2017](https://www.crcpress.com/Generalized-Additive-Models-An-Introduction-with-R-Second-Edition/Wood/p/book/9781498728331). It is convenient to use it together with `mgcViz`, which extends the basic visualizations provided by `mgcv`.
+
+The main fitting functions are:
+
+   - `gam()` from the `mgcv` package fits an GAM models, and returns an object of class `gam`. See `?gamObject`. 
+   - `gamV()` from the `mgcViz` package is a wrapper around `gam`. It returns `gamViz` objects, for which `mgcViz` provides lots of visualizations.
+
+An additive example with four covariates
+=======================
+
+We simulate some data from the model:
+$$
+y = f_0(x_0)+f_1(x_1)+f_2(x_2)+f_3(x_3)+e,\;\;\; e \sim N(0, 2)
+$$
+by doing
+```{r fourD1, message = F}
+library(mgcViz)
+set.seed(2)
+dat <- gamSim(1, n=1000, dist="normal", scale=2)[c("y", "x0", "x1", "x2", "x3")]
+```
+We start by fitting a Gaussan linear model:
+```{r fourD2, message = F}
+fit1 <- gamV(y ~ x0 + x1 + x2 + x3, 
+             family = gaussian,
+             data = dat,
+             aViz = list(nsim = 50))
+
+print(plot(fit1, allTerms = TRUE), pages = 1) # plot() calls plot.gamViz(). See ?plot.gamViz
+```
+We use `pages = 1` to plot on a single page, and `allTerms` to plot also the parametric effects (the plotting method used here plots only smooth or random effects by default).
+
+Should we use a smooth effect of `x0`? If the effect of `x0` was non-linear, we would expect that the mean of the residuals would depart from 0, as we move along `x0`. We can use a marginal residual check:
+```{r fourD3, message = F}
+check1D(fit1, "x0") + l_gridCheck1D(mean)
+```
+There is definitely a pattern here. An analogous plot along `x2` also shows a residual pattern, hence we consider the model:
+```{r fourD4, message = F}
+fit2 <- gamV(y ~ s(x0, k = 10) + x1 + s(x2, k = 10) + x3, 
+             data = dat, 
+             aViz = list(nsim = 50))
+
+check1D(fit2, "x0") + l_gridCheck1D(mean)
+```
+Looks much better, and leads to much lower AIC:
+```{r fourD4b, message = F}
+AIC(fit1, fit2)
+```
+
+<!-- Get QQ-plot of residuals with 90\% confidence intervals: -->
+<!-- ```{r fourD4c, message = F} -->
+<!-- qq(fit2, CI = "normal") # qq() call qq.gamViz(). See ?qq.gamViz -->
+<!-- ``` -->
+
+Now we check whether spline bases were large enough:
+```{r fourD4d, message = F}
+check(fit2)  # check() calls check.gamViz(). See ?check.gamViz
+```
+Maybe we should increase `k` for `x2`.
+
+We can plot all the smooth effects by doing:
+```{r fourD5, message = F}
+print(plot(fit2), pages = 1)
+```
+To print only the second we do:
+```{r fourD6, message = F}
+plot(fit2, select = 2)
+```
+
+<!-- ```{r fourD7, message = F} -->
+<!-- print(plot(fit2, allTerms = TRUE), pages = 1) -->
+<!-- ``` -->
+
+We get p-values etc by doing:
+```{r fourD8, message = F}
+summary(fit2)
+```
+
+
+Big Data GAM modelling 
+=======================
+
+The main Big Data fitting functions we are going to use are:
+
+   - `bam()` from the `mgcv` package fits an GAM models, and returns an object of class `gam`. See `?gamObject`. 
+   - `bamV()` from the `mgcViz` package is a wrapper around `bam`. It returns `gamViz` objects.
+   
+We simulate some data from the model:
+$$
+y = f(x, z) + e, \;\;\; e \sim N(0, 2)
+$$
+```{r BigDat1, message = F}
+library(mgcViz)
+dat <- gamSim(eg = 2, n = 1e5, dist = "normal", scale = 0.5, verbose = TRUE)
+truth <- dat$truth
+dat <- dat$data
+
+image(truth$f, xlab = "x", ylab = "z")
+contour(truth$x, truth$z, truth$f, add = TRUE)
+```
+
+Fiting a Big Data GAM:
+```{r BigDat2, message = F}
+fit <- bamV(y ~ s(x, z, k = 6),           # isotropic smooth
+            data = dat,
+            aGam = list(discrete = TRUE,  # arguments going to bam(). See ?bam 
+                        nthreads = 2), 
+            aViz = list(nsim = 50)        # arguments going to getViz(). See ?getViz
+            )
+```
+
+<!-- We can achieve the same result by doing: -->
+<!-- ```{r BigDat3, message = F, eval = FALSE} -->
+<!-- fitX <- bam(y ~ s(x, z, k = 6), data = dat, discrete = TRUE, nthreads = 2) -->
+
+<!-- fitX <- getViz(fitX, nsim = 50) -->
+<!-- ``` -->
+
+Plotting the smooth effect:
+```{r BigDat4, message = F}
+plot(fit)
+```
+
+Marginal residuals checks:
+```{r BigDat5, message = F}
+check1D(fit, "x") + l_gridCheck1D()
+```
+
+Same but across two dimensions:
+```{r BigDat5a, message = F}
+check2D(fit, "x", "z") + l_gridCheck2D(bw = c(0.05, 0.05))
+```
+
+The visual check above shows a massive residuals pattern. This goes away by increasing `k`:
+```{r BigDat6, message = F}
+fit2 <- bamV(y ~ s(x, z, k = 100),         # isotropic smooth
+             data = dat,
+             aGam = list(discrete = TRUE,  # arguments going to bam(). See ?bam 
+                         nthreads = 2), 
+             aViz = list(nsim = 50)        # arguments going to getViz(). See ?getViz
+)
+
+check2D(fit2, "x", "z") + l_gridCheck2D( )
+```
+
+Alternatively we can use a tensor product smooth:
+```{r BigDat7, message = F}
+fit3 <- bamV(y ~ te(x, z, k = c(10, 10)),    # anisotropic smooth
+             data = dat,
+             aGam = list(discrete = TRUE, 
+                         nthreads = 2), 
+             aViz = list(nsim = 50)     
+)
+```
+
+Or we can decompose it in marginal smooth and interaction term:
+```{r BigDat7a, message = F}
+fit4 <- bamV(y ~ ti(x, k = 10) +             # Marginal for x
+                 ti(z, k = 10) +             # Marginal for y
+                 ti(x, z, k = c(10, 10)),    # anisotropic smooth interaction
+             data = dat,
+             aGam = list(discrete = TRUE, 
+                         nthreads = 2), 
+             aViz = list(nsim = 50)     
+)
+```
+
+We can plot the marginals and the interaction separately:
+```{r BigDat8, message = F}
+print(plot(fit4, select = 1:2), pages = 1)
+```
+```{r BigDat9, message = F}
+plot(fit4, select = 3)
+```
+
+We can also extract the tensor interaction and plot it interactively:
+```{r BigDat10, message = F, eval = FALSE}
+tmp <- sm(fit4, 3)
+plotRGL(tmp, residuals = TRUE) # Will not appear in the .html file
+```
+
+Extra things
+=======================
+
+Things that I haven't explained (but you might find in the exercises):
+
+   - 1) the use of `offset()` in model formula  
+   - 2) how to extract smooth effects using `sm` and add layers to plots
+   - 3) how to use the `select = TRUE` argument in `gam` to do variable selection
+   - 4) the use of the `id` argument as in `s(x, id = 1) + s(x, id = 2)`
+   
+Here I provide a very basic explanation for each.
+
+##### 1) Use of `offset()`
+
+Suppose we want to model fish egg counts $y$ as a function of spatial location and of other factors `x` (as in one of the exercises). If we use a Poisson model with log-link then our model for the expected number of eggs is:
+$$
+\log{\mathbb{E}(y|{\bf x})} = f_1({\bf x}) + \cdots + f_m({\bf x}),
+$$
+or equivalently
+$$
+\mathbb{E}(y|{\bf x}) = \exp \{f_1({\bf x}) + \cdots + f_m({\bf x}) \}.
+$$
+Suppose that the $i$-th egg count $y_i$ has been obtained using a fishing net of $m_i$ square meters. Then $\mathbb{E}(y_i|x_i)$ should be directly proportional $m_i$. That is, we don't want to estimate the effect of $m$ because it is clear that (everything else being equal) double $m$ will doubling the expected number of eggs we will catch. Hence we would like our model to be 
+$$
+\log{\mathbb{E}(y|{\bf x})} = \log(m) + f_1({\bf x}) + \cdots + f_m({\bf x}),
+$$
+so that 
+$$
+\mathbb{E}(y|{\bf x}) = m\exp \{f_1({\bf x}) + \cdots + f_m({\bf x}) \}.
+$$
+This can be achieved by adding an `offset` terms to the linear predictor:
+```{r extra1, message = F, eval = FALSE}
+fit <- gam(eggs ~ offset(log.m) + s(x), family = poisson(link = "log"))
+```
+where `log.m` is $\log(m)$.
+
+##### 2) Extracting smooth effects using `sm()` and adding layers to plots
+
+Suppose we are fitting this model
+```{r extra1a, message = F}
+dat <- gamSim(1,n=1000,dist="normal",scale=2)
+b <- gamV(y ~ x0+s(x1, x2)+s(x3), data=dat)
+```
+
+We could plot the estimated effects as usual using `plot(fit)` but, alternatively, we can extract individual smooth effects using `sm` and then plot them:
+```{r extra2, message = F}
+s1 <- sm(b, 1)
+plot(s1) + l_rug() + l_fitRaster() + l_fitContour()
+```
+The functions starting with `l_` are graphical layers, similar to `ggplot` layers. To see which layes are available for a particular effect we
+can do:
+```{r extra3, message = F}
+listLayers( plot(s1) )
+```
+which prints out a list of available layers. We can do the same for parametric effects, using the `pterm` function:
+```{r extra4, message = F}
+p1 <- pterm(b, 1)
+plot(p1) + l_rug() + l_ciPoly() + l_fitLine()
+```
+ 
+##### 3) Using `select = TRUE` in `gam` to do variable selection
+
+We simulate data from the model
+$$
+y = x^2 + e, \;\;\; e \sim N(0, \sigma^2),
+$$
+by doing:
+```{r extra5, message = F}
+set.seed(42424)
+n <- 1000
+x <- runif(n, -1, 1)
+dat <- data.frame(y = x^2 + rnorm(n, 0, 1), x = x, z = runif(n, -1, 1))
+```
+Notice that I have added an extra variable `z` which has nothing to do with the distribution of `y`. Now I fit the model
+```{r extra6, message = F}
+fit <- gamV(y ~ s(x) + s(z), data = dat)
+plot(fit, select = 2)
+```
+Notice that the estimated effect of `z`, while weak, is not zero. This is because the penalty used by `mgcv` penalises the curvature of `s(z)`, 
+not its slope. To penalise also the slope of the effect `s(z)` we can use the `select` argument:
+```{r extra7, message = F}
+fit <- gamV(y ~ s(x) + s(z), data = dat, aGam = list(select = TRUE))
+print(plot(fit, select = 2), page = 1)
+```
+Now the whole effect, that is both its smooth and parametric part, has been effectively removed from the fit.
+
+##### 4) Using the `id` argument when creating smooth effects
+
+Suppose we are fitting a model with two by-factor smooth:
+```{r extra8, message = F, eval = F}
+fit <- gamV(y ~ s(x1, by = Factor1) + s(z2, by = Factor2) + s(x3), ...)
+```
+By default the smoothing parameter of `s(x1)` will be different for each level of factor variable `Factor1`. Same for `s(x2)` and `Factor2`.
+We can make so that only one smoothing parameter will be used for each of the two by-factor effects by doing:
+```{r extra9, message = F, eval = F}
+fit <- gamV(y ~ s(x1, by = Factor1, id = 1) + s(z2, by = Factor2, id = 2) + s(x3), ...)
+```
+This model has 3 smoothing parameters, so all the smooths along `x1` have the same smootness penalty. Same for `x2`. If we do:
+```{r extra10, message = F, eval = F}
+fit <- gamV(y ~ s(x1, by = Factor1, id = 1) + s(z2, by = Factor2, id = 1) + s(x3), ...)
+```
+Then we are using only 2 smoothing parameters, and all the smooths along `x1` and `x2` have the same penalty (which is typically undesirable).
+See `?s` for more details.
+
+References
+=======================
+
+Wood S. N. (2017) Generalized additive models: an introduction with R. Second edition. Chapman and Hall/CRC, 2017.
+
+
+
+
+
+
+
